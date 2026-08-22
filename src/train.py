@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import joblib
 
 from config import Config
 from data import discover, stratified_split, RetinaDataset
@@ -36,7 +37,7 @@ def train(model, loader, device, epochs, lr, weight_decay, save_path):
         print(f"loss={avg:.5f}")
         if avg < best:
             best = avg; torch.save(model.state_dict(), save_path)
-    model.load_state_dict(torch.load(save_path, map_location=device))
+    model.load_state_dict(torch.load(save_path, map_location=device, weights_only=True))
     return model
 
 
@@ -70,6 +71,8 @@ def main():
 
     lp_v,y_v=predict(light,val_loader,device); ep_v,_=predict(expert,val_loader,device)
     router=LearnedRouter().fit(lp_v,lp_v.argmax(1),ep_v.argmax(1),y_v,min_sensitivity=args.min_sensitivity)
+    joblib.dump(router, model_dir / "router.joblib")
+
     lp,y=predict(light,test_loader,device); ep,_=predict(expert,test_loader,device)
     light_pred=lp.argmax(1); expert_pred=ep.argmax(1)
     escalate,scores=router.decide(lp)
