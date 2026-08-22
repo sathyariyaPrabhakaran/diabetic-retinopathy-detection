@@ -2,58 +2,54 @@
 
 ## Cost-Aware Adaptive Medical AI
 
-A research-oriented machine-learning system for diabetic-retinopathy screening that investigates whether expensive deep-model inference can be reduced through learned adaptive routing while preserving screening sensitivity.
+This repository implements a research-oriented ML system that investigates whether **selective deep inference** can reduce computational cost in diabetic-retinopathy screening while preserving sensitivity.
 
-### Research problem
+This is deliberately not a single-model image classifier. The engineering contribution is the **adaptive inference policy**: a lightweight model handles straightforward cases and a learned router escalates difficult cases to a stronger expert model.
 
-A conventional pipeline sends every retinal image through the same deep model. This project instead studies **selective inference**: a lightweight model handles easy cases, while a learned router escalates uncertain or difficult cases to an expert model.
+### Architecture
 
 ```text
 Fundus image
-     |
-     v
-Lightweight model
-     |
-     +--> routing features
-     |      - confidence
-     |      - entropy
-     |      - probability margin
-     |      - image-quality signal
-     |
-     v
-Learned adaptive router
-     |
-     +--> easy ----------------> lightweight prediction
-     |
-     +--> difficult -----------> expert model
-                                      |
-                                      v
-                               final prediction
+    |
+    v
+MobileNetV3-Small (low-cost model)
+    |
+    +--> class probabilities
+    +--> confidence
+    +--> entropy
+    +--> probability margin
+    |
+    v
+Learned routing model
+    |
+    +-----------------------------+
+    |                             |
+    v                             v
+Easy / confident             Difficult / uncertain
+    |                             |
+    v                             v
+Lightweight result          EfficientNet-B0 expert
+                                  |
+                                  v
+                           Final screening result
 ```
 
-### Models
+### Why this is higher-level than a conventional classifier
 
-- Lightweight model: MobileNetV3-Small
-- Expert model: EfficientNet-B0
-- Router: Logistic Regression over uncertainty/routing features
-- Operating threshold: selected on a validation split under a minimum sensitivity constraint
+The project evaluates a **cost-performance operating point**, rather than maximizing accuracy alone. The router is trained from validation/calibration outcomes to estimate when expert escalation is useful. Its operating threshold is selected under a minimum sensitivity constraint.
 
-### Evaluation
+The evaluation compares four systems:
 
-The implementation compares:
+1. **Lightweight-only** — MobileNetV3-Small for every case.
+2. **Expert-only** — EfficientNet-B0 for every case.
+3. **Fixed routing baseline** — expert escalation from a fixed confidence rule.
+4. **Learned adaptive routing** — our learned escalation policy.
 
-1. Lightweight-only inference
-2. Expert-only inference
-3. Fixed confidence-style routing baseline
-4. Learned adaptive routing
-
-Metrics include accuracy, balanced accuracy, macro F1, macro sensitivity, escalation rate, inference time, parameter count, and the computation/performance trade-off.
-
-**No performance or cost-saving percentage is claimed before experiments are run.**
+Measured outputs include accuracy, balanced accuracy, macro F1, macro sensitivity, expert escalation rate, parameter count, measured forward time, and estimated adaptive inference time.
 
 ### Dataset
 
-Use a public diabetic-retinopathy fundus-image dataset according to its license and terms. Place images in class folders under `data/retina/`.
+Use a public diabetic-retinopathy fundus-image dataset under its applicable license/terms. The loader expects class folders:
 
 ```text
 data/retina/
@@ -64,10 +60,43 @@ data/retina/
   4_proliferative/
 ```
 
-The loader also supports a different number of class folders.
+Any number of class folders >= 2 is supported. Do not commit the dataset to GitHub.
 
-### Status
+### Local setup
 
-Research implementation in progress. Dataset selection, preprocessing, training, baseline experiments, routing experiments, ablation studies, and external/generalization evaluation will be completed before drawing conclusions.
+```bash
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 
-> This is a research prototype and is not a clinical diagnostic device.
+pip install -r requirements.txt
+```
+
+Place the dataset under `data/retina/`, then run:
+
+```bash
+python src/train.py --data-dir data/retina --epochs 5
+python src/report.py
+```
+
+Results are written locally to `results/evaluation.json` and `results/REPORT.md`; trained weights remain ignored by Git.
+
+### Research protocol
+
+Before claiming improvement, run and preserve:
+
+- the same train/validation/test split for every model;
+- lightweight-only and expert-only baselines;
+- fixed-threshold routing baseline;
+- learned-router ablation;
+- multiple minimum-sensitivity constraints;
+- runtime measurement on the same machine/device;
+- parameter-count comparison;
+- confusion matrices and per-class sensitivity;
+- external/generalization testing when a compatible second public dataset is available.
+
+A cost-saving result is only meaningful if sensitivity remains acceptable. **No accuracy or cost-saving percentage is fabricated in this repository.**
+
+### Safety
+
+This is a research prototype and is **not a clinical diagnostic device**. A real clinical deployment would require prospective validation, external validation, regulatory review, and clinical oversight.
