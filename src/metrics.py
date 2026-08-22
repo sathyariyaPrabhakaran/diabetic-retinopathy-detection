@@ -20,12 +20,12 @@ def parameter_count(model):
 
 
 def measured_forward_time(model, loader, device):
-    model.eval(); total = 0.0; batches = 0
+    model.eval(); total = 0.0; images = 0
     with torch.no_grad():
         for x, _, _ in loader:
             x = x.to(device)
             if device.type == "cuda": torch.cuda.synchronize()
             start = time.perf_counter(); _ = model(x)
             if device.type == "cuda": torch.cuda.synchronize()
-            total += time.perf_counter() - start; batches += 1
-    return total, batches
+            total += time.perf_counter() - start; images += len(x)
+    return {"seconds": total, "images": images, "seconds_per_image": total / max(images, 1)}
