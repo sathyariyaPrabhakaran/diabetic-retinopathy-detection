@@ -12,9 +12,7 @@ from torchvision import transforms
 
 from src.models import build_lightweight, build_expert
 
-st.set_page_config(page_title="Diabetic Retinopathy | Adaptive AI", page_icon="🩺", layout="wide")
-st.title("Cost-Aware Adaptive Diabetic Retinopathy Screening")
-st.caption("Research prototype — not a clinical diagnostic device")
+st.set_page_config(page_title="Adaptive DR Screening", page_icon="🩺", layout="wide")
 
 MODEL_DIR = Path("models")
 RESULTS = Path("results/evaluation.json")
@@ -34,13 +32,30 @@ def load_models():
 
 required = [RESULTS, MODEL_DIR / "lightweight.pt", MODEL_DIR / "expert.pt"]
 if not all(p.exists() for p in required):
-    st.warning("Train the models first: python src/train.py --data-dir data/retina --epochs 5")
+    st.error("Required model artifacts are missing. Run the training/evaluation pipeline first.")
     st.stop()
 
 data, light, expert, router, device = load_models()
 classes = data["classes"]
+router_info = data.get("router", {})
+runtime = data.get("runtime_seconds", {})
+performance = data.get("performance", {}).get("learned_adaptive_router", {})
 
-uploaded = st.file_uploader("Upload a retinal fundus image", type=["jpg", "jpeg", "png", "webp"])
+st.title("Cost-Aware Adaptive Diabetic Retinopathy Screening")
+st.caption("Research prototype — not a clinical diagnostic device")
+
+with st.sidebar:
+    st.header("System status")
+    st.metric("Device", str(device).upper())
+    st.metric("Expert escalation", f"{router_info.get('escalation_rate', 0):.1%}")
+    st.metric("Test accuracy", f"{performance.get('accuracy', 0):.1%}")
+    st.metric("Test macro F1", f"{performance.get('macro_f1', 0):.3f}")
+    st.metric("Adaptive runtime", f"{runtime.get('adaptive_estimate', 0):.2f}s")
+    st.caption("Metrics are from the saved evaluation run.")
+
+st.markdown("### Upload a retinal fundus image")
+uploaded = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png", "webp"])
+
 if uploaded:
     image = Image.open(uploaded).convert("RGB")
     c1, c2 = st.columns(2)
@@ -52,32 +67,46 @@ if uploaded:
         transforms.Normalize([.485, .456, .406], [.229, .224, .225]),
     ])
     x = tfm(image).unsqueeze(0).to(device)
+
+    # Cost-aware inference: run the lightweight model first. The expert model
+    # is invoked only when the router decides that escalation is required.
     with torch.no_grad():
-        lp = torch.softmax(light(x), 1).cpu().numpy()
-        ep = torch.softmax(expert(x), 1).cpu().numpy()
+        light_probs = torch.softmax(light(x), 1).cpu().numpy()
 
     if router is not None:
-        escalate, scores = router.decide(lp)
-        route = "Expert model" if bool(escalate[0]) else "Lightweight model"
+        escalate, scores = router.decide(light_probs)
+        should_escalate = bool(escalate[0])
+        routing_score = float(scores[0])
     else:
-        score = float(1 - lp.max())
-        escalate = np.array([score >= 0.30])
-        scores = np.array([score])
-        route = "Expert model" if bool(escalate[0]) else "Lightweight model"
+        routing_score = float(1.0 - light_probs.max())
+        should_escalate = routing_score >= 0.30
 
-    final = ep[0] if bool(escalate[0]) else lp[0]
+    if should_escalate:
+        with torch.no_grad():
+            final = torch.softmax(expert(x), 1).cpu().numpy()[0]
+        route = "Expert model"
+        st.warning("Router flagged this image for expert review.")
+    else:
+        final = light_probs[0]
+        route = "Lightweight model"
+        st.success("Router accepted the lightweight prediction.")
+
     pred = int(final.argmax())
     confidence = float(final[pred])
 
-    c2.metric("Predicted class", classes[pred])
+    c2.metric("Predicted stage", classes[pred])
     c2.metric("Confidence", f"{confidence:.1%}")
-    c2.metric("Route", route)
-    st.progress(confidence, text="Prediction confidence")
+    c2.metric("Inference route", route)
+    st.progress(min(max(confidence, 0.0), 1.0), text="Prediction confidence")
 
     st.subheader("Class probabilities")
     probs = {classes[i]: float(final[i]) for i in range(len(classes))}
     st.bar_chart(probs)
-    st.info(
-        f"Routing score: {float(scores[0]):.4f}. "
-        "This output is a research demonstration and must not be used as a medical diagnosis."
-    )
+
+    with st.expander("Routing details"):
+        st.write(f"Routing score: **{routing_score:.4f}**")
+        st.write(f"Calibration threshold: **{router_info.get('threshold', 'N/A')}**")
+        st.write(f"Expert escalation rate on test set: **{router_info.get('escalation_rate', 0):.2%}**")
+
+st.divider()
+st.info("Research demonstration only. A prediction from this system must not be used as a medical diagnosis or as a substitute for qualified clinical evaluation.")
