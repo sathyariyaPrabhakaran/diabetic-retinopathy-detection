@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import joblib
@@ -11,6 +12,13 @@ import torch
 from torchvision import transforms
 
 from src.models import build_lightweight, build_expert
+
+# The router was trained from inside `src`, so the joblib pickle records its
+# class as `router.LearnedRouter`. Streamlit starts from the repository root,
+# where that module name is not normally importable. Register the package
+# module under the historical name before unpickling the router.
+from src import router as router_module
+sys.modules.setdefault("router", router_module)
 
 st.set_page_config(page_title="Adaptive DR Screening", page_icon="🩺", layout="wide")
 
