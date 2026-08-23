@@ -96,19 +96,24 @@ def main():
         joblib.dump(router, router_path)
 
     lp, y = predict(light, test_loader, device); ep, _ = predict(expert, test_loader, device)
-    light_pred = lp.argmax(1); expert_pred = ep.argmax(1); escalate, _ = router.decide(lp); adaptive_pred = np.where(escalate, expert_pred, light_pred)
+    light_pred = lp.argmax(1); expert_pred = ep.argmax(1); escalate, route_scores = router.decide(lp); adaptive_pred = np.where(escalate, expert_pred, light_pred)
     light_time = measured_forward_time(light, test_loader, device); expert_time = measured_forward_time(expert, test_loader, device)
     adaptive_time = light_time["seconds"] + expert_time["seconds"] * float(escalate.mean())
     fixed_escalate = lp.max(axis=1) < 0.70; fixed_pred = np.where(fixed_escalate, expert_pred, light_pred)
+
+    adaptive_metrics = classification_metrics(y, adaptive_pred)
+    adaptive_metrics["escalated_images"] = int(escalate.sum())
+    adaptive_metrics["route_score_mean"] = float(route_scores.mean())
+    adaptive_metrics["route_score_p95"] = float(np.percentile(route_scores, 95))
 
     result = {
         "project": "Cost-Aware Adaptive Diabetic Retinopathy Screening", "dataset": "APTOS-derived labeled retinal fundus dataset",
         "classes": classes, "device": str(device), "counts": {"train": len(train_s), "validation": len(val_s), "test": len(test_s)},
         "class_counts_train": dict(zip(classes, train_counts)),
         "models": {"lightweight_parameters": parameter_count(light), "expert_parameters": parameter_count(expert)},
-        "router": {"threshold": router.threshold, "escalation_rate": float(escalate.mean()), "minimum_macro_sensitivity_target": args.min_sensitivity},
-        "runtime_seconds": {"lightweight_all": light_time, "expert_all": expert_time, "adaptive_estimate": adaptive_time},
-        "performance": {"lightweight_only": classification_metrics(y, light_pred), "expert_only": classification_metrics(y, expert_pred), "fixed_confidence_router": classification_metrics(y, fixed_pred), "learned_adaptive_router": classification_metrics(y, adaptive_pred)},
+        "router": {"threshold": router.threshold, "escalation_rate": float(escalate.mean()), "escalated_images": int(escalate.sum()), "minimum_macro_sensitivity_target": args.min_sensitivity, "target_met_on_calibration": bool(getattr(router, "target_met", False))},
+        "runtime_seconds": {"lightweight_all": light_time, "expert_all": expert_time, "adaptive_estimate": adaptive_time, "estimated_speedup_vs_expert": float(expert_time["seconds"] / max(adaptive_time, 1e-9)), "estimated_runtime_reduction_vs_expert": float(1.0 - adaptive_time / max(expert_time["seconds"], 1e-9))},
+        "performance": {"lightweight_only": classification_metrics(y, light_pred), "expert_only": classification_metrics(y, expert_pred), "fixed_confidence_router": classification_metrics(y, fixed_pred), "learned_adaptive_router": adaptive_metrics},
     }
     (result_dir / "evaluation.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2)); print("\nArtifacts saved:"); print("  models/lightweight.pt"); print("  models/expert.pt"); print("  models/router.joblib"); print("  results/evaluation.json")
