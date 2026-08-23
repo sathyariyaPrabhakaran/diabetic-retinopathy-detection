@@ -17,34 +17,48 @@ def routing_features(probabilities, quality=None):
 
 
 class LearnedRouter:
-    """Learn which samples benefit from expert escalation.
-
-    Training uses a calibration split. A positive target means the lightweight
-    model is wrong while the expert model is correct. The operating threshold
-    is selected subject to a minimum macro-sensitivity constraint.
-    """
+    """Cost-aware escalation policy learned on a validation/calibration split."""
     def __init__(self, random_state=42):
         self.model = LogisticRegression(max_iter=2000, class_weight="balanced", random_state=random_state)
         self.threshold = 0.5
+        self.target_met = False
+        self.validation_macro_sensitivity = 0.0
+        self.validation_macro_f1 = 0.0
+        self.validation_escalation_rate = 0.0
 
     def fit(self, light_prob, light_pred, expert_pred, y_true, min_sensitivity=0.90, quality=None):
         x = routing_features(light_prob, quality)
         useful = ((light_pred != y_true) & (expert_pred == y_true)).astype(int)
         if np.unique(useful).size < 2:
             self.model = None
-            self.threshold = 1.0
+            self.threshold = 0.5
             return self
+
         self.model.fit(x, useful)
         score = self.model.predict_proba(x)[:, 1]
-        best_threshold, best_rate = 1.0, 1.0
+        candidates = []
         for threshold in np.linspace(0.01, 0.99, 99):
             escalate = score >= threshold
             final = np.where(escalate, expert_pred, light_pred)
-            sensitivity = recall_score(y_true, final, average="macro", zero_division=0)
+            sensitivity = float(recall_score(y_true, final, average="macro", zero_division=0))
+            # Macro F1 is used as a secondary quality objective while the
+            # escalation rate is the primary cost objective when the target is met.
+            from sklearn.metrics import f1_score
+            macro_f1 = float(f1_score(y_true, final, average="macro", zero_division=0))
             rate = float(escalate.mean())
-            if sensitivity >= min_sensitivity and rate < best_rate:
-                best_threshold, best_rate = float(threshold), rate
-        self.threshold = best_threshold
+            candidates.append((float(threshold), sensitivity, macro_f1, rate))
+
+        feasible = [c for c in candidates if c[1] >= min_sensitivity]
+        if feasible:
+            best = min(feasible, key=lambda c: (c[3], -c[2], -c[1]))
+            self.target_met = True
+        else:
+            # Do not silently disable routing when the requested target is
+            # infeasible. Choose the best sensitivity/F1 trade-off instead.
+            best = max(candidates, key=lambda c: (c[1], c[2], -c[3]))
+            self.target_met = False
+
+        self.threshold, self.validation_macro_sensitivity, self.validation_macro_f1, self.validation_escalation_rate = best
         return self
 
     def score(self, probabilities, quality=None):
