@@ -101,33 +101,25 @@ def main():
     weights, train_counts = class_weights(train_s, len(classes), device)
     print(f"Training class counts: {dict(zip(classes, train_counts))}")
 
-    light = train(
-        build_lightweight(len(classes)).to(device), train_loader, device,
-        args.epochs, Config.lr, Config.weight_decay, model_dir / "lightweight.pt", weights
-    )
-    expert = train(
-        build_expert(len(classes)).to(device), train_loader, device,
-        args.epochs, Config.lr, Config.weight_decay, model_dir / "expert.pt", weights
-    )
+    light = train(build_lightweight(len(classes)).to(device), train_loader, device, args.epochs, Config.lr, Config.weight_decay, model_dir / "lightweight.pt", weights)
+    expert = train(build_expert(len(classes)).to(device), train_loader, device, args.epochs, Config.lr, Config.weight_decay, model_dir / "expert.pt", weights)
 
     lp_v, y_v = predict(light, val_loader, device)
     ep_v, _ = predict(expert, val_loader, device)
-    router = LearnedRouter().fit(
-        lp_v, lp_v.argmax(1), ep_v.argmax(1), y_v,
-        min_sensitivity=args.min_sensitivity
-    )
+    router = LearnedRouter().fit(lp_v, lp_v.argmax(1), ep_v.argmax(1), y_v, min_sensitivity=args.min_sensitivity)
     joblib.dump(router, model_dir / "router.joblib")
 
     lp, y = predict(light, test_loader, device)
     ep, _ = predict(expert, test_loader, device)
     light_pred = lp.argmax(1)
     expert_pred = ep.argmax(1)
-    escalate, scores = router.decide(lp)
+    escalate, _ = router.decide(lp)
     adaptive_pred = np.where(escalate, expert_pred, light_pred)
 
-    light_time, _ = measured_forward_time(light, test_loader, device)
-    expert_time, _ = measured_forward_time(expert, test_loader, device)
-    adaptive_time = light_time + expert_time * float(escalate.mean())
+    # measured_forward_time returns a dictionary, not a tuple.
+    light_time = measured_forward_time(light, test_loader, device)
+    expert_time = measured_forward_time(expert, test_loader, device)
+    adaptive_time = light_time["seconds"] + expert_time["seconds"] * float(escalate.mean())
 
     fixed_escalate = lp.max(axis=1) < 0.70
     fixed_pred = np.where(fixed_escalate, expert_pred, light_pred)
@@ -139,20 +131,9 @@ def main():
         "device": str(device),
         "counts": {"train": len(train_s), "validation": len(val_s), "test": len(test_s)},
         "class_counts_train": dict(zip(classes, train_counts)),
-        "models": {
-            "lightweight_parameters": parameter_count(light),
-            "expert_parameters": parameter_count(expert),
-        },
-        "router": {
-            "threshold": router.threshold,
-            "escalation_rate": float(escalate.mean()),
-            "minimum_macro_sensitivity_target": args.min_sensitivity,
-        },
-        "runtime_seconds": {
-            "lightweight_all": light_time,
-            "expert_all": expert_time,
-            "adaptive_estimate": adaptive_time,
-        },
+        "models": {"lightweight_parameters": parameter_count(light), "expert_parameters": parameter_count(expert)},
+        "router": {"threshold": router.threshold, "escalation_rate": float(escalate.mean()), "minimum_macro_sensitivity_target": args.min_sensitivity},
+        "runtime_seconds": {"lightweight_all": light_time, "expert_all": expert_time, "adaptive_estimate": adaptive_time},
         "performance": {
             "lightweight_only": classification_metrics(y, light_pred),
             "expert_only": classification_metrics(y, expert_pred),
